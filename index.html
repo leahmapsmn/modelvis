@@ -42,20 +42,26 @@
     .stage{margin-top:14px;background:#fff;border:1px solid #d9ddd7;border-radius:16px;min-height:590px;overflow:hidden;position:relative;box-shadow:0 8px 26px #284b3c0c}
     .empty{position:absolute;inset:0;display:grid;place-items:center;text-align:center;color:var(--muted);padding:40px}
     .empty strong{display:block;color:#355c50;font-family:Georgia,serif;font-size:21px;margin-bottom:6px}
-    svg{display:block;width:100%;height:72vh;min-height:590px;background-color:#fff;background-image:radial-gradient(#dce3df 1px,transparent 1px);background-size:20px 20px}
-    #diagram{touch-action:none}
+    svg{display:block;width:100%;height:72vh;min-height:590px;background-color:#fff}
+    #diagram{touch-action:none;cursor:grab}
     #diagram [data-node-id]{cursor:grab;user-select:none}
     #diagram.dragging,#diagram.dragging [data-node-id]{cursor:grabbing}
     .zoom{position:absolute;right:13px;bottom:13px;display:flex;gap:6px;background:#ffffffdd;padding:6px;border:1px solid #dce1de;border-radius:12px;backdrop-filter:blur(5px)}
     .zoom button{padding:6px 10px;min-width:34px}
+    .diagram-help{font-size:12px;color:var(--muted);margin:10px 4px 0}
+    dialog{width:min(440px,90vw);border:1px solid #bcc9c3;border-radius:16px;padding:20px;background:var(--panel);color:var(--ink)}
+    dialog::backdrop{background:#24322e66}
+    dialog h2{margin:0 0 12px;font-size:20px}
+    .note-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
     .legend{position:absolute;left:13px;bottom:13px;display:flex;gap:14px;background:#ffffffdd;padding:8px 11px;border:1px solid #dce1de;border-radius:10px;backdrop-filter:blur(5px);font-size:11px;color:var(--muted)}
     .key{display:flex;align-items:center;gap:5px}.swatch{width:15px;height:10px;border-radius:3px;border:1px solid}.swatch.input{background:var(--blue2);border-color:var(--blue)}.swatch.tool{background:var(--orange2);border-color:var(--orange)}.swatch.output{background:var(--green2);border-color:var(--green);border-radius:50%}
     footer{font-size:11px;color:#7b8983;text-align:center;padding:12px}
     @media print{
       @page{size:landscape;margin:.35in}
-      header{padding:0 0 10px}.badge,.controls,.status,.zoom,.legend,footer{display:none!important}
+      header{padding:0 0 10px}.badge,.controls,.status,.zoom,.legend,.diagram-help,dialog,footer{display:none!important}
       main{padding:0}.stage{border:0;box-shadow:none;margin:0;overflow:visible;min-height:0}
       svg{height:7in;min-height:0;background:none}
+      [data-grid]{display:none}
     }
   </style>
 </head>
@@ -71,12 +77,15 @@
       <button id="sampleBtn">Try sample model</button>
       <select id="direction" title="Diagram direction"><option value="LR">Horizontal: left → right</option><option value="TB">Vertical: top → bottom</option></select>
       <label class="check"><input id="fullPaths" type="checkbox"> Show full paths</label>
+      <label class="check"><input id="snapGrid" type="checkbox" checked> Snap to grid</label>
       <label class="check" title="Leave the exported PNG background transparent"><input id="transparentBg" type="checkbox" checked> Transparent PNG</label>
       <input id="bgColor" class="color-input" type="color" value="#ffffff" aria-label="PNG background color" disabled>
       <input id="bgHex" class="hex-input" type="text" value="#FFFFFF" maxlength="7" aria-label="PNG background hex code" disabled>
       <span class="spacer"></span>
       <button id="fitBtn" disabled>Fit</button>
       <button id="resetBtn" disabled>Reset layout</button>
+      <button id="noteBtn" disabled>Add sticky note</button>
+      <select id="lineStyle" aria-label="Connector style"><option value="rounded">Rounded elbows</option><option value="square">Square elbows</option><option value="straight">Straight lines</option></select>
       <button id="svgBtn" disabled>Download SVG</button>
       <button id="pngBtn" disabled>Download PNG</button>
       <button id="printBtn" disabled>Print / Save PDF</button>
@@ -87,6 +96,7 @@
       </details>
     </section>
     <div id="status" class="status" role="status"></div>
+    <p class="diagram-help">Drag the dotted background to pan. Drag boxes or notes to move them. Double-click a note to edit it. Scroll or use + / − to zoom; Fit shows everything.</p>
     <section class="stage" id="stage">
       <div class="empty" id="empty"><div><strong>No model loaded yet</strong>Open a ModelBuilder-exported Python file or try the sample.</div></div>
       <svg id="diagram" xmlns="http://www.w3.org/2000/svg" aria-label="Model workflow diagram" style="display:none"></svg>
@@ -94,7 +104,13 @@
       <div class="zoom" id="zoom" style="display:none"><button id="minusBtn" title="Zoom out">−</button><button id="plusBtn" title="Zoom in">+</button></div>
     </section>
   </main>
-  <footer>Drag any box to rearrange it · Model Workflow Visualizer · prototype v0.5</footer>
+  <dialog id="noteDialog" aria-labelledby="noteHeading">
+    <h2 id="noteHeading">Sticky note</h2>
+    <label for="noteText">Your note</label>
+    <textarea id="noteText" maxlength="2000" placeholder="Explain a step, add a reminder, or describe your model…"></textarea>
+    <div class="note-actions"><button id="deleteNoteBtn">Delete note</button><button id="cancelNoteBtn">Cancel</button><button id="saveNoteBtn" class="primary">Save note</button></div>
+  </dialog>
+  <footer>Model Workflow Visualizer · prototype v0.7</footer>
 
 <script>
 const sampleCode = `# Exported-style sample from ArcGIS ModelBuilder
@@ -147,6 +163,7 @@ const svg = $('diagram');
 let currentCode = '', currentName = 'model', graph = null;
 let vb = {x:0,y:0,w:1200,h:700}, natural = {w:1200,h:700};
 let positions = {}, drag = null;
+let notes = [], nextNote = 0, editingNote = null;
 let bounds = {x:0,y:0,w:1200,h:700};
 
 const TOOL_EXCLUDES = new Set(['EnvManager','SpatialReference','GetParameterAsText','SetParameterAsText','GetParameter','SetParameter','Describe','ListFields','Exists']);
@@ -453,7 +470,7 @@ function render(){
   if(!graph)return;
   endDrag();positions=modelLayout(graph,$('direction').value);updateBounds();paint();fit();
   svg.style.display='block';$('empty').style.display='none';$('legend').style.display='flex';$('zoom').style.display='flex';
-  ['fitBtn','resetBtn','svgBtn','pngBtn','printBtn'].forEach(id=>$(id).disabled=false);
+  ['fitBtn','resetBtn','noteBtn','svgBtn','pngBtn','printBtn'].forEach(id=>$(id).disabled=false);
 }
 
 function paint(){
@@ -461,33 +478,36 @@ function paint(){
   const defs=`<defs><filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#183c30" flood-opacity=".13"/></filter><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#768981"/></marker><style>.n-title{font:700 16px Inter,Arial,sans-serif;fill:#24322e}.n-sub{font:11px Inter,Arial,sans-serif;fill:#66756f}.n-param{font:12px Inter,Arial,sans-serif;fill:#384842}.edge-label{font:10px Inter,Arial,sans-serif;fill:#63736d;paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}.edge{fill:none;stroke:#768981;stroke-width:2;marker-end:url(#arrow)}</style></defs>`;
   const edges=graph.edges.map(e=>edgeSvg(e,pos,dir)).join('');
   const nodes=graph.nodes.map(n=>nodeSvg(n,pos[n.id])).join('');
-  svg.innerHTML=defs+edges+nodes;
+  const grid=`<defs><pattern id="dotGrid" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="1" fill="#dce3df"/></pattern></defs><rect data-grid="true" x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="url(#dotGrid)" pointer-events="none"/>`;
+  svg.innerHTML=defs+grid+edges+nodes+notes.map(noteSvg).join('');
 }
 
 function updateBounds(){
-  const boxes=Object.values(positions);if(!boxes.length)return;
+  const boxes=[...Object.values(positions),...notes.map(notePosition)];if(!boxes.length)return;
   const x=Math.min(0,...boxes.map(p=>p.x-45)),y=Math.min(0,...boxes.map(p=>p.y-45));
   bounds={x,y,w:Math.max(...boxes.map(p=>p.x+p.w))+65-x,h:Math.max(...boxes.map(p=>p.y+p.h))+65-y};
   natural={w:bounds.w,h:bounds.h};
 }
 
-function pointerPosition(e){
-  const matrix=svg.getScreenCTM();if(!matrix)return null;
+function pointerPosition(e,inverse){
+  if(!inverse){const matrix=svg.getScreenCTM();if(!matrix)return null;inverse=matrix.inverse()}
   const point=svg.createSVGPoint();point.x=e.clientX;point.y=e.clientY;
-  return point.matrixTransform(matrix.inverse());
+  return point.matrixTransform(inverse);
 }
 function startDrag(e){
-  if(e.button!==0||!graph)return;
-  const node=e.target.closest('[data-node-id]');if(!node)return;
-  const id=node.getAttribute('data-node-id'),p=positions[id],point=pointerPosition(e);if(!p||!point)return;
-  e.preventDefault();drag={id,pointerId:e.pointerId,start:point,x:p.x,y:p.y};
+  if(e.button!==0||!graph||drag)return;
+  const node=e.target.closest('[data-node-id]'),id=node?.getAttribute('data-node-id');
+  const matrix=svg.getScreenCTM();if(!matrix)return;
+  const inverse=matrix.inverse(),point=pointerPosition(e,inverse),p=node?(positions[id]||notes.find(n=>n.id===id)):vb;if(!p||!point)return;
+  e.preventDefault();drag={id,kind:node?'node':'pan',pointerId:e.pointerId,start:point,inverse,x:p.x,y:p.y};
   svg.setPointerCapture(e.pointerId);svg.classList.add('dragging');
 }
 function moveDrag(e){
   if(!drag||e.pointerId!==drag.pointerId)return;
-  const point=pointerPosition(e);if(!point)return;e.preventDefault();
-  const p=positions[drag.id];p.x=drag.x+point.x-drag.start.x;p.y=drag.y+point.y-drag.start.y;
-  updateBounds();paint();
+  const point=pointerPosition(e,drag.inverse);if(!point)return;e.preventDefault();
+  const dx=point.x-drag.start.x,dy=point.y-drag.start.y;
+  if(drag.kind==='pan'){vb.x=drag.x-dx;vb.y=drag.y-dy;applyViewBox()}
+  else{const p=positions[drag.id]||notes.find(n=>n.id===drag.id);p.x=snapCoordinate(drag.x+dx);p.y=snapCoordinate(drag.y+dy);updateBounds();paint()}
 }
 function endDrag(e){
   if(!drag||(e&&e.pointerId!==drag.pointerId))return;
@@ -509,7 +529,55 @@ function edgeSvg(e,pos,dir){
     const portIndex=Math.max(0,incoming.findIndex(x=>x===e)),offset=(portIndex-(incoming.length-1)/2)*16;
     const x1=a.x+a.w/2,y1=a.y+a.h,x2=b.x+b.w/2+(e.kind==='uses'?offset:0),y2=b.y,mid=(y1+y2)/2;d=`M${x1},${y1} V${mid} H${x2} V${y2}`;
   }
+  const style=$('lineStyle').value;
+  if(style==='straight'){
+    const x1=dir==='LR'?a.x+a.w:a.x+a.w/2,y1=dir==='LR'?a.y+a.h/2:a.y+a.h;
+    const incoming=graph.edges.filter(x=>x.to===e.to&&x.kind==='uses').sort((u,v)=>(u.argIndex||0)-(v.argIndex||0));
+    const offset=(Math.max(0,incoming.findIndex(x=>x===e))-(incoming.length-1)/2)*16;
+    const x2=dir==='LR'?b.x:b.x+b.w/2+(e.kind==='uses'?offset:0),y2=dir==='LR'?b.y+b.h/2+(e.kind==='uses'?offset:0):b.y;
+    d=`M${x1},${y1} L${x2},${y2}`;
+  }else if(style==='rounded')d=roundElbows(d);
   return `<path class="edge" d="${d}"/>`;
+}
+
+// Round each elbow by 10% of the shorter neighboring segment, up to 12 units.
+function roundElbows(path){
+  const points=[];let x=0,y=0;
+  for(const part of path.matchAll(/([MHV])([-\d.e+]+)(?:,([-\d.e+]+))?/gi)){
+    if(part[1]==='M'){x=Number(part[2]);y=Number(part[3])}
+    else if(part[1]==='H')x=Number(part[2]);else y=Number(part[2]);
+    const last=points.at(-1);if(!last||last.x!==x||last.y!==y)points.push({x,y});
+  }
+  if(!points.length)return path;
+  let d=`M${points[0].x},${points[0].y}`;
+  for(let i=1;i<points.length-1;i++){
+    const a=points[i-1],b=points[i],c=points[i+1],ab=Math.hypot(b.x-a.x,b.y-a.y),bc=Math.hypot(c.x-b.x,c.y-b.y),r=Math.min(12,ab*.1,bc*.1);
+    const before={x:b.x+(a.x-b.x)*r/ab,y:b.y+(a.y-b.y)*r/ab},after={x:b.x+(c.x-b.x)*r/bc,y:b.y+(c.y-b.y)*r/bc};
+    d+=` L${before.x},${before.y} Q${b.x},${b.y} ${after.x},${after.y}`;
+  }
+  const last=points.at(-1);return d+` L${last.x},${last.y}`;
+}
+
+function snapCoordinate(value){return $('snapGrid').checked?Math.round(value/20)*20:value}
+function noteRows(note){
+  return note.text.split('\n').flatMap(line=>wrapText(line.replace(/(\S{28})(?=\S)/g,'$1 '),28));
+}
+function notePosition(note){return {x:note.x,y:note.y,w:240,h:Math.max(100,52+noteRows(note).length*17)}}
+function noteSvg(note){
+  const p=notePosition(note),rows=noteRows(note);
+  return `<g data-node-id="${esc(note.id)}" data-note-id="${esc(note.id)}" filter="url(#shadow)"><rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" rx="10" fill="#fff2a8" stroke="#c8a742" stroke-width="2"/><text class="n-sub" x="${p.x+16}" y="${p.y+23}">Note · double-click to edit</text>${rows.map((row,i)=>`<text class="n-param" x="${p.x+16}" y="${p.y+46+i*17}">${esc(row)}</text>`).join('')}</g>`;
+}
+function openNote(id=null){
+  editingNote=id;const note=notes.find(n=>n.id===id);
+  $('noteText').value=note?.text||'';$('deleteNoteBtn').hidden=!note;
+  $('noteDialog').showModal();$('noteText').focus();
+}
+function saveNote(){
+  const text=$('noteText').value.trim();if(!text){$('noteText').focus();return}
+  const note=notes.find(n=>n.id===editingNote);
+  if(note)note.text=text;
+  else notes.push({id:`note-${++nextNote}`,text,x:snapCoordinate(vb.x+vb.w/2-120),y:snapCoordinate(vb.y+vb.h/2-50)});
+  updateBounds();paint();$('noteDialog').close();
 }
 
 function nodeSvg(n,p){
@@ -525,7 +593,7 @@ function nodeSvg(n,p){
 
 function build(code,name='model'){
   try{
-    currentCode=code;currentName=name.replace(/\.py$/i,'')||'model';graph=parseModel(code);render();
+    const parsed=parseModel(code);endDrag();notes=[];currentCode=code;currentName=name.replace(/\.py$/i,'')||'model';graph=parsed;render();
     const tools=graph.nodes.filter(n=>n.type==='tool').length,inputs=graph.nodes.filter(n=>n.type==='input').length,outputs=graph.nodes.filter(n=>n.type==='output').length;
     showStatus(`Built <strong>${esc(currentName)}</strong>: ${tools} tool${tools===1?'':'s'}, ${inputs} input${inputs===1?'':'s'}, and ${outputs} output${outputs===1?'':'s'}.`,false);
   }catch(err){showStatus(esc(err.message||String(err)),true)}
@@ -533,9 +601,13 @@ function build(code,name='model'){
 function showStatus(html,error){const s=$('status');s.innerHTML=html;s.className='status show'+(error?' error':'')}
 function fit(){vb={...bounds};applyViewBox()}
 function zoomBy(factor){const nw=vb.w*factor,nh=vb.h*factor;vb.x+=(vb.w-nw)/2;vb.y+=(vb.h-nh)/2;vb.w=nw;vb.h=nh;applyViewBox()}
-function applyViewBox(){svg.setAttribute('viewBox',`${vb.x} ${vb.y} ${vb.w} ${vb.h}`)}
+function applyViewBox(){
+  svg.setAttribute('viewBox',`${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+  const grid=svg.querySelector('[data-grid]');if(grid)for(const [key,value] of Object.entries({x:vb.x,y:vb.y,width:vb.w,height:vb.h}))grid.setAttribute(key,value);
+}
 function downloadSvg(){
   const clone=svg.cloneNode(true);clone.setAttribute('width',natural.w);clone.setAttribute('height',natural.h);clone.setAttribute('viewBox',`${bounds.x} ${bounds.y} ${natural.w} ${natural.h}`);clone.style.background='white';
+  clone.querySelector('[data-grid]')?.remove();
   const xml='<?xml version="1.0" encoding="UTF-8"?>\n'+new XMLSerializer().serializeToString(clone);const blob=new Blob([xml],{type:'image/svg+xml'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${currentName}-workflow.svg`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 
@@ -553,6 +625,7 @@ function downloadPng(){
   const hex=$('bgHex').value.trim();
   if(!$('transparentBg').checked&&!validHex(hex)){showStatus('Enter a six-digit background color such as <strong>#FFFFFF</strong>.',true);return}
   const clone=svg.cloneNode(true);clone.setAttribute('width',natural.w);clone.setAttribute('height',natural.h);clone.setAttribute('viewBox',`${bounds.x} ${bounds.y} ${natural.w} ${natural.h}`);clone.style.background='none';
+  clone.querySelector('[data-grid]')?.remove();
   const xml='<?xml version="1.0" encoding="UTF-8"?>\n'+new XMLSerializer().serializeToString(clone);
   const svgBlob=new Blob([xml],{type:'image/svg+xml;charset=utf-8'}),url=URL.createObjectURL(svgBlob),img=new Image();
   img.onload=()=>{
@@ -577,6 +650,11 @@ $('direction').addEventListener('change',render);$('fullPaths').addEventListener
 $('transparentBg').addEventListener('change',()=>syncBackground());$('bgColor').addEventListener('input',()=>syncBackground('color'));$('bgHex').addEventListener('change',()=>syncBackground('hex'));
 $('fitBtn').addEventListener('click',fit);$('minusBtn').addEventListener('click',()=>zoomBy(1.2));$('plusBtn').addEventListener('click',()=>zoomBy(.82));
 $('resetBtn').addEventListener('click',render);
+$('noteBtn').addEventListener('click',()=>openNote());$('saveNoteBtn').addEventListener('click',saveNote);
+$('cancelNoteBtn').addEventListener('click',()=>$('noteDialog').close());
+$('deleteNoteBtn').addEventListener('click',()=>{notes=notes.filter(n=>n.id!==editingNote);updateBounds();paint();$('noteDialog').close()});
+$('lineStyle').addEventListener('change',()=>{if(graph)paint()});
+svg.addEventListener('dblclick',e=>{const note=e.target.closest('[data-note-id]');if(note)openNote(note.getAttribute('data-note-id'))});
 $('svgBtn').addEventListener('click',downloadSvg);$('pngBtn').addEventListener('click',downloadPng);$('printBtn').addEventListener('click',()=>{fit();window.print()});
 svg.addEventListener('pointerdown',startDrag);svg.addEventListener('pointermove',moveDrag);
 svg.addEventListener('pointerup',endDrag);svg.addEventListener('pointercancel',endDrag);svg.addEventListener('lostpointercapture',endDrag);
